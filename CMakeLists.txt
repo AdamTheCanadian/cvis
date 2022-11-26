@@ -3,7 +3,9 @@ project(cvis)
 
 add_subdirectory(external)
 
-add_subdirectory(../cmat ${PROJECT_BINARY_DIR}/cmat)
+if (NOT TARGET cmat)
+    add_subdirectory(cmat)
+endif()
 
 include_directories(include)
 add_library(${PROJECT_NAME}

@@ -1,0 +1,3 @@
+[submodule "cmat"]
+	path = cmat
+	url = git@github.com:AdamTheCanadian/cmat.git
