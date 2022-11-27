@@ -4,7 +4,7 @@ project(cvis)
 add_subdirectory(external)
 
 if (NOT TARGET cmat)
-    add_subdirectory(cmat)
+    add_subdirectory(../cmat ${PROJECT_BINARY_DIR}/cmat)
 endif()
 
 include_directories(include)
