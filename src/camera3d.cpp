@@ -1,56 +1,36 @@
 #include "cvis/camera3d.h"
-#include <math.h>
+#include <cmath>
 
-#define CIMGUI_DEFINE_ENUMS_AND_STRUCTS
-#include "cimgui.h"
-#include "cimgui_impl.h"
+using namespace vis;
 
-static const float EPSILON_F = 1.0e-5f;
+Camera3d::Camera3d() :
+    position_(0, 0, 5),
+    target_(0, 0, 0),
+    up_(0, 1, 0){
 
-/* For converting radians into degrees */
-static const double RAD_TO_DEG = 180.0 / M_PI;
-static const float RAD_TO_DEG_F = (float)RAD_TO_DEG;
-
-void visCamera_Init(visCamera* cam) {
-  Vec3f_SetZero(&cam->position);
-  Vec3f_SetZero(&cam->target);
-  Vec3f_SetZero(&cam->up);
-  Vec3f_SetZero(&cam->angle);
-  Mat4f_SetIdentity(&cam->view);
-  Mat4f_SetIdentity(&cam->rotation);
-
-  /* We assume by default the Y axis the global Up axis */
-  cam->up.y = 1.0f;
-
-  /* Our camera is centered in the origin (0 distance to target) */
-  cam->distance_to_target = 0.0;
-
-  visCamera_UpdateLookAtMatrix(cam);
+  view_ = Eigen::Matrix4d::Identity();
 }
 
-void visCamera_SetCameraPosition(visCamera* cam,
-                                 const Vec3f* pos) {
-  Vec3f_Copy(pos, &cam->position);
-  visCamera_UpdateLookAtMatrix(cam);
+void Camera3d::SetCameraPosition(const Eigen::Vector3d &pos) {
+  position_ = pos;
+  UpdateView();
 }
 
-void visCamera_SetTargetPosition(visCamera* cam,
-                                 const Vec3f* target) {
-  Vec3f_Copy(target, &cam->target);
-  /* Changing the target, we want to maintain the same (previous) distance to the target, and
-   * orientation of the camera with respect to the target.
-   * In order to do that we need to move the camera position in the direction of the current
-   * forward/direction vector */
-  Vec3f forward = (Vec3f){
-      .x = -cam->view.mat[2],
-      .y = -cam->view.mat[6],
-      .z = -cam->view.mat[10]
-  };
-  cam->position = (Vec3f){
-    .x = target->x - (float)cam->distance_to_target * forward.x,
-    .y = target->y - (float)cam->distance_to_target * forward.y,
-    .z = target->z - (float)cam->distance_to_target * forward.z,
-  };
+void Camera3d::SetTargetPosition(const Eigen::Vector3d &target) {
+  target_ = target;
+
+  Eigen::Vector3d forward(-view_(0, 2),
+                          -view_(1, 2),
+                          -view_(2, 2));
+
+  double distance_to_target = target_.dot(position_);
+  // We moved the target position but want to maintain the cameras relative
+  // view to the target so we need to shift the camera position along the forward vector
+  // by the new distance
+  position_ = Eigen::Vector3d(target_.x() - distance_to_target * forward.x(),
+                              target_.y() - distance_to_target * forward.y(),
+                              target_.z() - distance_to_target * forward.z());
+
   visCamera_ComputeMatrix(cam);
 }
 

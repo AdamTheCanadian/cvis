@@ -1,8 +1,31 @@
 #ifndef CVIS_INCLUDE_CVIS_CAMERA3D_H_
 #define CVIS_INCLUDE_CVIS_CAMERA3D_H_
 
-#include "cmat/mat4f.h"
-#include "cmat/vec3f.h"
+#include "Eigen/Core"
+
+namespace vis {
+
+class Camera3d {
+ public:
+  Camera3d();
+
+  void SetCameraPosition(const Eigen::Vector3d &pos);
+
+  void SetTargetPosition(const Eigen::Vector3d &target);
+
+  const Eigen::Matrix4d& GetViewMatrix() const;
+ private:
+
+  void UpdateView();
+
+  Eigen::Vector3d position_;
+  Eigen::Vector3d target_;
+
+  Eigen::Vector3d up_;
+
+  Eigen::Matrix4d view_;
+};
+}
 
 /**
  * A camera for viewing in a 3D world
