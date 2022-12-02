@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.0)
 project(cvis)
 
+set(CMAKE_CXX_STANDARD 14)
+
 find_package(Eigen3 REQUIRED)
 find_package(GTest REQUIRED)
 add_subdirectory(external)
@@ -9,7 +11,6 @@ include_directories(include
         ${EIGEN3_INCLUDE_DIR}
         ${GTEST_INCLUDE_DIR})
 
-set(CMAKE_CXX_STANDARD 14)
 
 include_directories(include)
 add_library(${PROJECT_NAME}

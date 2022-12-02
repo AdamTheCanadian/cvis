@@ -1,154 +1,200 @@
 #include "cvis/camera3d.h"
 #include <cmath>
 
-using namespace vis;
 
-Camera3d::Camera3d() :
-    position_(0, 0, 5),
-    target_(0, 0, 0),
-    up_(0, 1, 0){
+static constexpr float EPS = 1.0e-5f;
 
-  view_ = Eigen::Matrix4d::Identity();
+vis::Camera3D::Camera3D() : position_(0, 0, 0),
+                            target_(0, 0, 0),
+                            up_direction_(0, 1, 0),
+                            distance_to_target_(0),
+                            field_of_view_(45) {
+
+  // Initialize to identity in case forget to set any of the parameters we dont get
+  // a zero matrix (no drawing/rendering will no happen)
+  view_.setIdentity();
+  rotation_.setIdentity();
 }
 
-void Camera3d::SetCameraPosition(const Eigen::Vector3d &pos) {
-  position_ = pos;
-  UpdateView();
+void vis::Camera3D::SetPosition(const Eigen::Vector3f &newPosition) {
+  position_ = newPosition;
 }
 
-void Camera3d::SetTargetPosition(const Eigen::Vector3d &target) {
-  target_ = target;
-
-  Eigen::Vector3d forward(-view_(0, 2),
-                          -view_(1, 2),
-                          -view_(2, 2));
-
-  double distance_to_target = target_.dot(position_);
-  // We moved the target position but want to maintain the cameras relative
-  // view to the target so we need to shift the camera position along the forward vector
-  // by the new distance
-  position_ = Eigen::Vector3d(target_.x() - distance_to_target * forward.x(),
-                              target_.y() - distance_to_target * forward.y(),
-                              target_.z() - distance_to_target * forward.z());
-
-  visCamera_ComputeMatrix(cam);
+void vis::Camera3D::SetPosition(float x,
+                                float y,
+                                float z) {
+  SetPosition(Eigen::Vector3f(x, y, z));
 }
 
-void visCamera_RotateIncrement(visCamera* cam,
-                               double x,
-                               double y,
-                               double z) {
-  /* Get the current rotation/orientation angles from the view matrix,
-   * then will update the angles, and recompute the matrix */
-  Vec3f angle = cam->angle;
-  /* Increment the current orientation */
-  angle.x += (float)x;
-  angle.y += (float)y;
-  angle.z += (float)z;
+void vis::Camera3D::SetTargetPosition(const Eigen::Vector3f &newTarget) {
+  target_ = newTarget;
 
-  visCamera_SetOrientationAngle(cam, &angle);
+  // When we change the target position we want to matain the same distance to target and
+  // orientation of the camera so we need to move the camera positions in the direction
+  // of new current forward/direction vector
+  Eigen::Vector3f forward(-view_(2), -view_(6), -view_(10));
+  position_.x() = target_.x() - distance_to_target_ * forward.x();
+  position_.y() = target_.y() - distance_to_target_ * forward.y();
+  position_.z() = target_.z() - distance_to_target_ * forward.z();
+
+  ComputeMatrix();
 }
 
-void visCamera_UpdateLookAtMatrix(visCamera* cam) {
+void vis::Camera3D::SetTargetPosition(float x,
+                                      float y,
+                                      float z) {
+  SetTargetPosition(Eigen::Vector3f(x, y, z));
+}
 
-  Mat4f_SetZero(&cam->view);
+void vis::Camera3D::RotateByIncrement(float x,
+                                      float y,
+                                      float z) {
 
-  /* If the camera is located at the target we only need to translate, no rotation is needed */
-  if (Vec3f_IsEqual(&cam->position, &cam->target)) {
-    Mat4f_SetIdentity(&cam->view);
-    Mat4f_SetIdentity(&cam->rotation);
-    Vec3f translation = (Vec3f) {
-        .x = -cam->position.x,
-        .y = -cam->position.y,
-        .z = -cam->position.z};
-    cam->view.mat[12] = translation.x;
-    cam->view.mat[13] = translation.y;
-    cam->view.mat[14] = translation.z;
+
+  Eigen::Vector3f current_angle = orientation_angles_;
+  // Increment the current orientation
+  current_angle.x() += (float)x;
+  current_angle.y() += (float)y;
+  current_angle.z() += (float)z;
+
+  SetOrientationAngles(current_angle);
+}
+
+void vis::Camera3D::SetOrientationAngles(const Eigen::Vector3f &newAngles) {
+  orientation_angles_ = newAngles;
+  rotation_.setIdentity();
+
+  /* Convert euler to rotation matrix */
+  const float sx = sinf(newAngles.x() * M_PI / 180.0f);
+  const float cx = cosf(newAngles.x() * M_PI / 180.0f);
+  const float sy = sinf(-newAngles.y() * M_PI / 180.0f);
+  const float cy = cosf(-newAngles.y() * M_PI / 180.0f);
+  const float sz = sinf(newAngles.z() * M_PI / 180.0f);
+  const float cz = cosf(newAngles.z() * M_PI / 180.0f);
+
+  rotation_(0) = cy * cz;
+  rotation_(1) = sx * sy * cz + cx * sz;
+  rotation_(2) = -cx * sy * cz + sx * sz;
+
+  rotation_(4) = -cy * sz;
+  rotation_(5) = -sx * sy * sz + cx * cz;
+  rotation_(6) = cx * sy * sz + sx * cz;
+
+  rotation_(8) = sy;
+  rotation_(9) = -sx * cy;
+  rotation_(10) = cx * cy;
+
+  ComputeMatrix();
+}
+
+void vis::Camera3D::SetOrientationAngles(float x,
+                                         float y,
+                                         float z) {
+  SetOrientationAngles(Eigen::Vector3f(x, y, z));
+}
+
+const Eigen::Matrix4f vis::Camera3D::GetViewMatrix() const {
+  return view_;
+}
+
+void vis::Camera3D::UpdateViewMatrix() {
+  // Make sure we reset any entries, dont want to carry forward any off
+  // diagonal elements for example
+  view_.setZero();
+
+  // If the camera is located at the target position, or close enough, we only
+  // need to apply a translation component to the view matrix
+  if (abs((position_ - target_).norm()) < 1.0e-3f) {
+    view_.setIdentity();
+    rotation_.setIdentity();
+    view_(12) = -position_.x();
+    view_(13) = -position_.y();
+    view_(14) = -position_.z();
     return;
   }
 
-  Vec3f forward, right, up;
-  Vec3f_SetZero(&forward);
-  Vec3f_SetZero(&right);
-  Vec3f_SetZero(&up);
+  // We need to calculate the three axes of the camera system.
+  // In OpenGL these are usually called forward, right, and up vectors
+  Eigen::Vector3f forward(0, 0, 0);
+  Eigen::Vector3f right(0, 0, 0);
+  Eigen::Vector3f up(0, 0, 0);
 
-  /* Calculate the camera coordinate system Z axis (the direction vector) */
-  forward = Vec3f_SubtractVec3f(&cam->position, &cam->target);
-  cam->distance_to_target = (double) Vec3f_Length(&forward);
-  Vec3f_Normalize(&forward);
+  forward = position_ - target_;
+  // Can update the distance to the target now that we have the vector between the camera and target
+  distance_to_target_ = forward.norm();
+  // Need to keep the vector as a unit/direction vector
+  forward.normalize();
 
-  /* By default assume Y axis is up, will correct this later as we determine the right
-   * and forward axes */
-  up.y = 1.0f;
-
-  /* If we are looking down/up on the Y axis (90 degrees) we need to change the up vector */
-  if (fabsf(forward.x) < EPSILON_F && fabsf(forward.z) < EPSILON_F) {
-    if (forward.y > 0) {
+  // We start with assuming the up vector is +y, and will correct for it later
+  up.y() = 1;
+  // If we are looking down/up on the Y axis (90 degrees) we need to change the up vector
+  if (abs(forward.x()) < EPS && abs(forward.z()) < EPS) {
+    if (forward.y() > 0) {
       /* Foward vector is pointing along the +Y axis */
-      up = (Vec3f){.x = 0.0f, .y = 0.0f, .z = -1.0f};
+      up = Eigen::Vector3f(0, 0, -1);
     }
     else {
       /* Foward vector is pointing along the -Y axis */
-      up = (Vec3f){.x = 0.0f, .y = 0.0f, .z = 1.0f};
+      up = Eigen::Vector3f(0, 0, 1);
     }
   }
 
-  /* Calculate the cameras right axis. */
-  right = Vec3f_Cross(&up, &forward);
+  // Take the cross product of the two axes vectors to determine the third axes
+  right.x() = up.y() * forward.z() - up.z() * forward.y();
+  right.y() = up.z() * forward.x() - up.x() * forward.z();
+  right.z() = up.x() * forward.y() - up.y() * forward.x();
 
-  /* In theory up and direction should already be normalized, meaning the cross
-   * product is normalized but just to be safe going to normalize */
-  Vec3f_Normalize(&right);
+  // Make sure its a unit vector
+  right.normalize();
 
-  /* Calculate the new up vector */
-  up = Vec3f_Cross(&forward, &right);
+  // Calculate the new up vector since we assumed its direction in the previous stesp
+  up.x() = forward.y() * right.z() - forward.z() * right.y();
+  up.y() = forward.z() * right.x() - forward.x() * right.z();
+  up.z() = forward.x() * right.y() - forward.y() * right.x();
 
-  Mat4f_SetIdentity(&cam->rotation);
-  cam->rotation.mat[0] = right.x;
-  cam->rotation.mat[4] = right.y;
-  cam->rotation.mat[8] = right.z;
+  rotation_.setIdentity();
+  rotation_(0) = right.x();
+  rotation_(4) = right.y();
+  rotation_(8) = right.z();
 
-  cam->rotation.mat[1] = up.x;
-  cam->rotation.mat[5] = up.y;
-  cam->rotation.mat[9] = up.z;
+  rotation_(1) = up.x();
+  rotation_(5) = up.y();
+  rotation_(9) = up.z();
 
-  cam->rotation.mat[2] = forward.x;
-  cam->rotation.mat[6] = forward.y;
-  cam->rotation.mat[10] = forward.z;
+  rotation_(2) = forward.x();
+  rotation_(6) = forward.y();
+  rotation_(10) = forward.z();
 
-  Mat4f_SetIdentity(&cam->view);
-  cam->view.mat[0] = right.x;
-  cam->view.mat[4] = right.y;
-  cam->view.mat[8] = right.z;
+  view_.setIdentity();
+  view_(0) = right.x();
+  view_(4) = right.y();
+  view_(8) = right.z();
+  view_(1) = up.x();
+  view_(5) = up.y();
+  view_(9) = up.z();
+  view_(2) = forward.x();
+  view_(6) = forward.y();
+  view_(10) = forward.z();
 
-  cam->view.mat[1] = up.x;
-  cam->view.mat[5] = up.y;
-  cam->view.mat[9] = up.z;
+  Eigen::Vector3f translation;
+  translation.x() = -right.dot(position_);
+  translation.y() = -up.dot(position_);
+  translation.z() = -forward.dot(position_);
 
-  cam->view.mat[2] = forward.x;
-  cam->view.mat[6] = forward.y;
-  cam->view.mat[10] = forward.z;
+  view_(12) = translation.x();
+  view_(13) = translation.y();
+  view_(14) = translation.z();
 
-  /* Translational components (note there is a negative sign) */
-  Vec3f translation = (Vec3f) {
-      .x = -Vec3f_DotProduct(&right, &cam->position),
-      .y = -Vec3f_DotProduct(&up, &cam->position),
-      .z = -Vec3f_DotProduct(&forward, &cam->position)
-  };
-  cam->view.mat[12] = translation.x;
-  cam->view.mat[13] = translation.y;
-  cam->view.mat[14] = translation.z;
-  visCamera_GetViewOrientation(cam, &cam->angle);
+  UpdateOrientationAngles();
 }
 
-void visCamera_GetViewOrientation(const visCamera* cam,
-                                  Vec3f* angleXYZ) {
+void vis::Camera3D::UpdateOrientationAngles() {
   float yaw = 0.0f;
   float pitch = 0.0f;
   float roll = 0.0f;
 
-  yaw = RAD_TO_DEG_F * asinf(cam->rotation.mat[8]);
-  if (cam->rotation.mat[10] < 0) {
+  yaw = 180.0f / M_PI * asinf(rotation_(8));
+  if (rotation_(10) < 0) {
     if (yaw >= 0) {
       yaw = 180.0f - yaw;
     }
@@ -157,110 +203,53 @@ void visCamera_GetViewOrientation(const visCamera* cam,
     }
   }
 
-  if (cam->rotation.mat[0] > -EPSILON_F && cam->rotation.mat[0] < EPSILON_F) {
+  if (rotation_(0) > -EPS && rotation_(0) < EPS) {
     roll = 0.0f;
-    pitch = RAD_TO_DEG_F * atan2f(cam->rotation.mat[1], cam->rotation.mat[5]);
+    pitch = 180.0f / M_PI * atan2f(rotation_(1), rotation_(5));
   }
   else {
-    roll = RAD_TO_DEG_F * atan2f(-cam->rotation.mat[4], cam->rotation.mat[0]);
-    pitch = RAD_TO_DEG_F * atan2f(-cam->rotation.mat[9], cam->rotation.mat[10]);
+    roll = 180.0f / M_PI * atan2f(-rotation_(4), rotation_(0));
+    pitch = 180.0f / M_PI * atan2f(-rotation_(9), rotation_(10));
   }
-  /* Remember in open gl Y is up, so a yaw rotation is rotating around Y */
-  angleXYZ->x = pitch;
-  angleXYZ->y = -yaw;
-  angleXYZ->z = roll;
+
+  /* Remember in open gl Y is up, so a yaw rotation is rotating around Y axis */
+  orientation_angles_ = Eigen::Vector3f(pitch, -yaw, roll);
 }
 
-void visCamera_SetOrientationAngle(visCamera* cam,
-                                   const Vec3f* angleXYZ) {
-  Vec3f_Copy(angleXYZ, &cam->angle);
-  Mat4f_SetIdentity(&cam->rotation);
+void vis::Camera3D::ComputeMatrix() {
+  Eigen::Vector3f right(rotation_(0), rotation_(1), rotation_(2));
+  Eigen::Vector3f up(rotation_(4), rotation_(5), rotation_(6));
+  Eigen::Vector3f forward(rotation_(8), rotation_(9), rotation_(10));
 
-  static const float DEG_TO_RAD_F = (float)(M_PI / 180.0);
+  Eigen::Vector3f translation;
+  translation.x() = right.x() * -target_.x() + up.x() * -target_.y() + forward.x() * -target_.z();
+  translation.y() = right.y() * -target_.x() + up.y() * -target_.y() + forward.y() * -target_.z();
+  translation.z() = right.z() * -target_.x() + up.z() * -target_.y() + forward.z() * -target_.z() - (float)distance_to_target_;
 
-  /* Convert euler to rotation matrix */
-  const float sx = sinf(angleXYZ->x * DEG_TO_RAD_F);
-  const float cx = cosf(angleXYZ->x * DEG_TO_RAD_F);
-  const float sy = sinf(-angleXYZ->y * DEG_TO_RAD_F);
-  const float cy = cosf(-angleXYZ->y * DEG_TO_RAD_F);
-  const float sz = sinf(angleXYZ->z * DEG_TO_RAD_F);
-  const float cz = cosf(angleXYZ->z * DEG_TO_RAD_F);
+  view_.setIdentity();
 
-  cam->rotation.mat[0] = cy * cz;
-  cam->rotation.mat[1] = sx * sy * cz + cx * sz;
-  cam->rotation.mat[2] = -cx * sy * cz + sx * sz;
+  view_(0) = right.x();
+  view_(1) = right.y();
+  view_(2) = right.z();
 
-  cam->rotation.mat[4] = -cy * sz;
-  cam->rotation.mat[5] = -sx * sy * sz + cx * cz;
-  cam->rotation.mat[6] = cx * sy * sz + sx * cz;
+  view_(4) = up.x();
+  view_(5) = up.y();
+  view_(6) = up.z();
 
-  cam->rotation.mat[8] = sy;
-  cam->rotation.mat[9] = -sx * cy;
-  cam->rotation.mat[10] = cx * cy;
+  view_(8) = forward.x();
+  view_(9) = forward.y();
+  view_(10) = forward.z();
 
-  visCamera_ComputeMatrix(cam);
-}
-
-void visCamera_ComputeMatrix(visCamera* cam) {
-  /* Extract the previous rotation matrix (orientation of the camera) */
-  Vec3f right = (Vec3f) {
-      .x = cam->rotation.mat[0],
-      .y = cam->rotation.mat[1],
-      .z = cam->rotation.mat[2]};
-  Vec3f up = (Vec3f) {
-      .x = cam->rotation.mat[4],
-      .y = cam->rotation.mat[5],
-      .z = cam->rotation.mat[6]};
-  Vec3f forward = (Vec3f) {
-      .x = cam->rotation.mat[8],
-      .y = cam->rotation.mat[9],
-      .z = cam->rotation.mat[10]};
-
-  Vec3f translation = (Vec3f) {
-      .x = right.x * -cam->target.x + up.x * -cam->target.y + forward.x * -cam->target.z,
-      .y = right.y * -cam->target.x + up.y * -cam->target.y + forward.y * -cam->target.z,
-      .z = right.z * -cam->target.x + up.z * -cam->target.y + forward.z * -cam->target.z - (float)cam->distance_to_target};
-
-  Mat4f_SetIdentity(&cam->view);
-
-  cam->view.mat[0] = right.x;
-  cam->view.mat[1] = right.y;
-  cam->view.mat[2] = right.z;
-
-  cam->view.mat[4] = up.x;
-  cam->view.mat[5] = up.y;
-  cam->view.mat[6] = up.z;
-
-  cam->view.mat[8] = forward.x;
-  cam->view.mat[9] = forward.y;
-  cam->view.mat[10] = forward.z;
-
-  cam->view.mat[12] = translation.x;
-  cam->view.mat[13] = translation.y;
-  cam->view.mat[14] = translation.z;
+  view_(12) = translation.x();
+  view_(13) = translation.y();
+  view_(14) = translation.z();
 
   /* Recompute the camera position */
-  forward = (Vec3f) {
-      .x = -cam->view.mat[2],
-      .y = -cam->view.mat[6],
-      .z = -cam->view.mat[10]};
-  cam->position = (Vec3f){
-      .x = cam->target.x - (float)cam->distance_to_target * forward.x,
-      .y = cam->target.y - (float)cam->distance_to_target * forward.y,
-      .z = cam->target.z - (float)cam->distance_to_target * forward.z};
-}
+  forward.x() = -view_(2);
+  forward.y() = -view_(6);
+  forward.z() = -view_(10);
 
-void visCamera_UpdateFromUserInput(visCamera* cam) {
-  static const double angle_scale = 0.2;
-  const struct ImGuiIO* io = igGetIO();
-  if (!io->WantCaptureMouse) {
-    if (io->MouseDown[0]) {
-      ImVec2 mouse_delta = io->MouseDelta;
-      /* As the mouse moves up down on the screen (which is a change of y position) we want to change
-       * the pitch angle. Thats a rotation around the X axis in OpenGL.
-       * Likewise, if the moves left/right (change of X position) we want to change the yaw angle. And thats
-       * a rotation around Y axis in OpenGL */
-      visCamera_RotateIncrement(cam, mouse_delta.y * angle_scale, 0.0, mouse_delta.x * angle_scale);
-    }
-  }
+  position_.x() = target_.x() - distance_to_target_ * forward.x();
+  position_.y() = target_.y() - distance_to_target_ * forward.y();
+  position_.z() = target_.z() - distance_to_target_ * forward.z();
 }
